@@ -93,7 +93,7 @@ def install(force: bool):
     if to_install:
         click.echo()
         if click.confirm(f"  Install {len(to_install)} missing package(s)?", default=True):
-            _run(["uv", "add", *to_install])
+            _run([sys.executable, "-m", "pip", "install", "--quiet", *to_install])
 
     click.echo()
 
@@ -423,7 +423,11 @@ def _sck_binary_built() -> bool:
 
 def _build_sck_helper() -> bool:
     """Build the sck-capture Swift helper and install to ~/.local/share/trnscrb/."""
-    swift_dir = Path(__file__).resolve().parent.parent / "swift" / "sck-capture"
+    # Bundled inside the Python package (works for pip/uv installs)
+    swift_dir = Path(__file__).resolve().parent / "sck-capture"
+    if not swift_dir.exists():
+        # Fallback: repo root (development checkout)
+        swift_dir = Path(__file__).resolve().parent.parent / "swift" / "sck-capture"
     if not swift_dir.exists():
         click.echo(click.style(f"  Swift source not found at {swift_dir}", fg="red"))
         return False

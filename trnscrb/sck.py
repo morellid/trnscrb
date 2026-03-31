@@ -12,7 +12,9 @@ import numpy as np
 # Default binary location (built by trnscrb install)
 _BINARY_NAME = "sck-capture"
 _INSTALL_DIR = Path.home() / ".local" / "share" / "trnscrb"
-_BUILD_DIR = Path(__file__).resolve().parent.parent / "swift" / "sck-capture" / ".build" / "debug"
+# Dev fallbacks: bundled package source or repo root swift/ dir
+_PKG_BUILD_DIR = Path(__file__).resolve().parent / "sck-capture" / ".build" / "debug"
+_REPO_BUILD_DIR = Path(__file__).resolve().parent.parent / "swift" / "sck-capture" / ".build" / "debug"
 
 SAMPLE_RATE = 16_000
 CHANNELS = 1
@@ -23,7 +25,7 @@ CHUNK_BYTES = CHUNK_SAMPLES * BYTES_PER_SAMPLE
 
 def find_binary() -> Path | None:
     """Locate the sck-capture binary."""
-    for directory in [_INSTALL_DIR, _BUILD_DIR]:
+    for directory in [_INSTALL_DIR, _PKG_BUILD_DIR, _REPO_BUILD_DIR]:
         path = directory / _BINARY_NAME
         if path.exists():
             return path

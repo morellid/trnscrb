@@ -402,8 +402,10 @@ tell application "Google Chrome"
         repeat with t in tabs of w
             set u to URL of t
             if u contains "meet.google.com" then
-                -- "Meeting ended" page: title contains "ended" — don't count it
-                if not (title of t contains "ended") then return "Google Meet"
+                -- Skip non-call pages: landing, home, "meeting ended"
+                if u ends with "/landing" or u is "https://meet.google.com/" then return ""
+                if (title of t contains "ended") then return ""
+                return "Google Meet"
             end if
             if u contains "teams.microsoft.com" then return "Microsoft Teams"
             if u contains "app.huddle.team" then return "Huddle"
@@ -422,7 +424,9 @@ tell application "Safari"
     repeat with w in windows
         try
             set u to URL of current tab of w
-            if u contains "meet.google.com" then return "Google Meet"
+            if u contains "meet.google.com" then
+                if u does not end with "/landing" and u is not "https://meet.google.com/" then return "Google Meet"
+            end if
             if u contains "teams.microsoft.com" then return "Microsoft Teams"
         end try
     end repeat

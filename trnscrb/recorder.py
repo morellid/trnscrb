@@ -6,6 +6,7 @@ When app_bundle_id is provided, captures two streams in parallel:
 
 When app_bundle_id is None, captures mic only (manual recording mode).
 """
+import logging
 import threading
 import tempfile
 from pathlib import Path
@@ -19,6 +20,8 @@ from trnscrb.screen_capture import check_permission
 
 SAMPLE_RATE = 16_000  # Whisper expects 16 kHz
 
+log = logging.getLogger(__name__)
+
 
 class Recorder:
     def __init__(self, app_bundle_id: str | None = None):
@@ -28,6 +31,7 @@ class Recorder:
         self._stream: sd.InputStream | None = None
         self._sck: SCKCapture | None = None
         self._lock = threading.Lock()
+        self._device_error = False
 
     # ── public ──────────────────────────────────────────────────────────────
 
@@ -117,6 +121,32 @@ class Recorder:
     # ── internal ────────────────────────────────────────────────────────────
 
     def _callback(self, indata, frames, time_info, status):
+        if status:
+            log.warning("sounddevice status: %s", status)
+            if not self._device_error:
+                self._device_error = True
+                threading.Thread(target=self._restart_mic_stream, daemon=True).start()
+            return
         if self._recording:
             with self._lock:
                 self._mic_frames.append(indata.copy())
+
+    def _restart_mic_stream(self) -> None:
+        """Restart mic stream after a device change (BLE connect/disconnect)."""
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+            self._stream = sd.InputStream(
+                device=None,
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=self._callback,
+                blocksize=1024,
+            )
+            self._stream.start()
+            self._device_error = False
+            log.info("Mic stream restarted after device change")
+        except Exception as e:
+            log.error("Failed to restart mic stream: %s", e)

@@ -23,10 +23,12 @@ uv tool install trnscrb && trnscrb install
 
 `trnscrb install` is a guided setup that handles:
 
-- BlackHole 2ch audio driver (captures system audio alongside mic)
+- Xcode Command Line Tools (needed to build the audio capture helper)
+- ScreenCaptureKit audio helper (captures meeting app audio — no virtual driver needed)
 - HuggingFace token for speaker diarization (pyannote)
 - Whisper `small` model download (~500 MB, one-time)
 - Claude Desktop MCP config
+- macOS permissions (Microphone, Calendar, Screen Recording)
 - Launch-at-login agent
 
 ---
@@ -48,7 +50,7 @@ You can also trigger manually from the menu bar: **Start Transcribing / Stop Tra
 | Step | What happens |
 |---|---|
 | Meeting detected | Mic active for 5 s + meeting app found |
-| Recording | Audio captured via mic or BlackHole (system + mic) |
+| Recording | Audio captured via ScreenCaptureKit (meeting app) + mic |
 | Transcription | Whisper `small` model, runs locally on Apple Silicon |
 | Diarization | Speaker labels via pyannote (needs HuggingFace token) |
 | Saved | Plain `.txt` in `~/meeting-notes/` |
@@ -118,16 +120,19 @@ trnscrb start
 
 ---
 
-## System audio with BlackHole
+## Audio capture
 
-To capture both your mic and the other participants' audio:
+trnscrb uses **ScreenCaptureKit** (macOS 13+) to capture meeting app audio directly — no virtual audio driver needed. When a meeting is detected, it captures two streams:
 
-1. Install BlackHole via `trnscrb install` (or `brew install blackhole-2ch`)
-2. Open **Audio MIDI Setup** → **+** → **Create Multi-Output Device**
-3. Check **BlackHole 2ch** and **MacBook Pro Speakers**
-4. **System Settings → Sound → Output** → select the Multi-Output Device
+- **ScreenCaptureKit** — the meeting app's audio (remote participants), device-independent
+- **Microphone** — your voice via the default input device
 
-trnscrb auto-detects BlackHole and uses it when available. Without it, only your mic is recorded.
+Both streams are mixed into a single recording. This works seamlessly with Bluetooth earbuds, AirPods, or any audio device — you can connect or disconnect devices mid-meeting without interrupting the recording.
+
+**Requirements:**
+- macOS 13 (Ventura) or later
+- Screen Recording permission (granted during `trnscrb install`)
+- Xcode Command Line Tools (to build the audio capture helper on first install)
 
 ---
 
@@ -153,9 +158,10 @@ Running `trnscrb enrich <id>` replaces `SPEAKER_00` / `SPEAKER_01` with inferred
 
 ## Requirements
 
-- macOS 13 or later
+- macOS 13 (Ventura) or later
 - Python 3.11+
 - Apple Silicon (M1/M2/M3/M4) recommended — Whisper runs on Metal
+- Xcode Command Line Tools (`xcode-select --install`)
 
 ---
 

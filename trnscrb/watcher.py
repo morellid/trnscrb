@@ -41,16 +41,17 @@ APP_GONE_POLLS = 3    # N consecutive app-gone checks → start cooling (~12s)
 # ── Meeting app detection ─────────────────────────────────────────────────────
 # Used by detect_meeting() at recording START — can be broad because the mic
 # activity signal already confirms something real is happening.
+# (process fragment, display name, bundle ID)
 _NATIVE_APPS = [
-    ("zoom.us",                 "Zoom"),
-    ("Slack Helper",            "Slack Huddle"),
-    ("Microsoft Teams Helper",  "Microsoft Teams"),
-    ("Webex",                   "Webex"),
-    ("Around Helper",           "Around"),
-    ("Tuple",                   "Tuple"),
-    ("Loom",                    "Loom"),
-    ("FaceTime",                "FaceTime"),
-    ("Discord Helper",          "Discord"),
+    ("zoom.us",                 "Zoom",             "us.zoom.xos"),
+    ("Slack Helper",            "Slack Huddle",     "com.tinyspeck.slackmacgap"),
+    ("Microsoft Teams Helper",  "Microsoft Teams",  "com.microsoft.teams2"),
+    ("Webex",                   "Webex",            "com.webex.meetingmanager"),
+    ("Around Helper",           "Around",           "me.around.Around"),
+    ("Tuple",                   "Tuple",            "app.tuple.app"),
+    ("Loom",                    "Loom",             "com.loom.desktop"),
+    ("FaceTime",                "FaceTime",         "com.apple.FaceTime"),
+    ("Discord Helper",          "Discord",          "com.hnc.Discord"),
 ]
 
 # Used by is_meeting_app_running() during STOP detection — must be NARROW.
@@ -86,10 +87,10 @@ class MicWatcher:
 
     def __init__(
         self,
-        on_start: Callable[[str], None],
+        on_start: Callable[[str, str | None], None],
         on_stop:  Callable[[], None],
     ):
-        self.on_start = on_start
+        self.on_start = on_start  # (meeting_name, bundle_id)
         self.on_stop  = on_stop
 
         self._thread: threading.Thread | None = None
@@ -149,8 +150,8 @@ class MicWatcher:
                     self._since        = now
                     self._no_app_polls = 0
                     _app_counter       = APP_POLL_EVERY  # check app on first recording poll
-                    meeting_name       = detect_meeting()
-                    self.on_start(meeting_name)
+                    meeting_name, bundle_id = detect_meeting()
+                    self.on_start(meeting_name, bundle_id)
 
             elif self._state == "recording":
                 if not active:
@@ -351,29 +352,33 @@ def is_meeting_app_running() -> bool:
     return _browser_has_meeting_tab()
 
 
-def detect_meeting() -> str:
-    """Best-effort: identify which meeting app is active when recording starts."""
+def detect_meeting() -> tuple[str, str | None]:
+    """Best-effort: identify which meeting app is active when recording starts.
+
+    Returns (meeting_name, bundle_id). bundle_id may be None if unknown.
+    """
     try:
         ps = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
-        for fragment, name in _NATIVE_APPS:
+        for fragment, name, bundle_id in _NATIVE_APPS:
             if fragment in ps.stdout:
-                return name
+                return name, bundle_id
     except Exception:
         pass
 
-    browser_name = _browser_has_meeting_tab(return_name=True)
-    if browser_name:
-        return browser_name
+    result = _browser_has_meeting_tab(return_name=True)
+    if result:
+        meeting_name, browser_bundle = result
+        return meeting_name, browser_bundle
 
     try:
         from trnscrb.calendar_integration import get_current_or_upcoming_event
         evt = get_current_or_upcoming_event()
         if evt and evt.get("title"):
-            return evt["title"]
+            return evt["title"], None
     except Exception:
         pass
 
-    return f"meeting-{datetime.now().strftime('%H%M')}"
+    return f"meeting-{datetime.now().strftime('%H%M')}", None
 
 
 _MEET_URLS = [
@@ -422,13 +427,19 @@ return ""
 """
 
 
+_BROWSER_SCRIPTS = [
+    (_CHROME_TAB_SCRIPT,  "com.google.Chrome"),
+    (_SAFARI_TAB_SCRIPT,  "com.apple.Safari"),
+]
+
+
 def _browser_has_meeting_tab(return_name: bool = False):
     """
     Check Chrome and Safari for open meeting tabs.
     return_name=False → returns bool (fast presence check)
-    return_name=True  → returns str name or None
+    return_name=True  → returns (meeting_name, browser_bundle_id) or None
     """
-    for script in [_CHROME_TAB_SCRIPT, _SAFARI_TAB_SCRIPT]:
+    for script, browser_bundle in _BROWSER_SCRIPTS:
         try:
             r = subprocess.run(
                 ["osascript", "-e", script],
@@ -436,7 +447,9 @@ def _browser_has_meeting_tab(return_name: bool = False):
             )
             name = r.stdout.strip()
             if name:
-                return name if return_name else True
+                if return_name:
+                    return name, browser_bundle
+                return True
         except Exception:
             pass
     return None if return_name else False

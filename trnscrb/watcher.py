@@ -145,11 +145,12 @@ class MicWatcher:
                     self._state = "idle"
                     self._since = None
                 elif elapsed >= WARMUP_SECS:
-                    meeting_name, bundle_id = detect_meeting()
-                    if not is_meeting_app_running() and bundle_id is None:
-                        # Mic is active but no meeting app found — stay warming
-                        # and recheck next poll (avoids recording YouTube, Spotify, etc.)
+                    if not is_meeting_app_running():
+                        # Mic is active but no confirmed meeting session — stay
+                        # warming.  Prevents false triggers from YouTube, Spotify,
+                        # or apps like Slack/Discord that are open but not in a call.
                         continue
+                    meeting_name, bundle_id = detect_meeting()
                     self._rec_started  = now
                     self._state        = "recording"
                     self._since        = now
@@ -265,6 +266,36 @@ def _meeting_app_pids() -> set[int]:
     return pids
 
 
+def _all_meeting_app_pids() -> set[int]:
+    """Return PIDs of ALL known meeting app processes (broad list).
+
+    Unlike _meeting_app_pids() which only checks the narrow
+    _ACTIVE_SESSION_PROCS list, this checks against _NATIVE_APPS.
+    Use together with _pids_using_mic_input() — "app is a meeting app"
+    + "app is using the mic" = reliable active-meeting signal, even for
+    apps whose helper processes are always running (Slack, Teams, Discord).
+    """
+    pids: set[int] = set()
+    try:
+        ps = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,comm="],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in ps.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                pid_str, comm = parts
+                for frag, _, _ in _NATIVE_APPS:
+                    if frag in comm:
+                        try:
+                            pids.add(int(pid_str))
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+    return pids
+
+
 def _pids_using_mic_input() -> set[int]:
     """
     Return PIDs of all processes currently capturing audio input.
@@ -325,20 +356,21 @@ def is_meeting_app_running() -> bool:
 
     Strategy (in order):
     1. CoreAudio per-process mic check — if any known meeting-app PID is
-       capturing audio input, the meeting is still live.
+       actively capturing audio input, the meeting is still live.  Uses the
+       BROAD _NATIVE_APPS list because "app is using mic" already confirms
+       an active session (Slack Helper using mic = huddle, not just Slack open).
     2. Active-session process check (CptHost for Zoom, etc.) via ps.
     3. Browser tab URL + title check (handles Google Meet / Teams in browser).
     """
-    # 1. Per-process mic check (macOS 14+)
+    # 1. Per-process mic check (macOS 14+) — broad app list is safe here
+    #    because we intersect with processes actually capturing audio input.
     mic_pids = _pids_using_mic_input()
     if mic_pids:
-        meeting_pids = _meeting_app_pids()
-        # If any process using the mic belongs to a meeting app → still in meeting
-        if mic_pids & meeting_pids:
+        all_meeting_pids = _all_meeting_app_pids()
+        if mic_pids & all_meeting_pids:
             return True
-        # If mic_pids is non-empty but no meeting app PID matches,
-        # fall through — browser-based meeting processes may not be in
-        # _ACTIVE_SESSION_PROCS, so we still check the browser tabs.
+        # Fall through — browser-based meetings may not be in _NATIVE_APPS,
+        # so we still check browser tabs below.
 
     # 2. Active-session native process check (narrow list — no helper false-positives)
     try:

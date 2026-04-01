@@ -30,6 +30,19 @@ import time
 from datetime import datetime
 from typing import Callable
 
+# PIDs of child processes spawned by trnscrb (e.g. sck-capture) — excluded
+# from mic-input checks alongside os.getpid().
+_child_pids: set[int] = set()
+
+
+def register_child_pid(pid: int) -> None:
+    _child_pids.add(pid)
+
+
+def unregister_child_pid(pid: int) -> None:
+    _child_pids.discard(pid)
+
+
 # ── Timing thresholds ─────────────────────────────────────────────────────────
 WARMUP_SECS    = 5    # mic must be active this long before we start
 GRACE_SECS     = 5    # mic must be idle this long before we stop
@@ -62,6 +75,19 @@ _ACTIVE_SESSION_PROCS = [
     "CptHost",   # Zoom: meeting capture host — only present during an active Zoom call
     "FaceTime",  # FaceTime — only runs during an active call
     "Tuple",     # Tuple — only runs during an active screen-share session
+]
+
+# Browser process fragments — used by is_meeting_app_running() to check if a
+# browser is actively using the mic (reliable end-of-call signal for browser-
+# based meetings like Meet/Teams/Zoom-in-browser).
+_BROWSER_PROC_FRAGS = [
+    "Google Chrome",
+    "Safari",
+    "firefox",
+    "Arc",
+    "Brave Browser",
+    "Microsoft Edge",
+    "Chromium",
 ]
 
 # CoreAudio process-level constants (macOS 14+)
@@ -129,7 +155,12 @@ class MicWatcher:
         _app_counter = 0   # counts mic polls; app is checked every APP_POLL_EVERY
 
         while self._running:
-            active  = is_mic_in_use()
+            # While recording/cooling, exclude trnscrb's own mic capture so the
+            # mic-idle signal can fire when the meeting app releases the mic.
+            if self._state in ("recording", "cooling"):
+                active = _is_mic_active_externally()
+            else:
+                active = is_mic_in_use()
             now     = datetime.now()
             elapsed = (now - self._since).total_seconds() if self._since else 0
 
@@ -241,7 +272,47 @@ def is_mic_in_use() -> bool:
         return False
 
 
+def _is_mic_active_externally() -> bool:
+    """True if any process OTHER than trnscrb is using the microphone.
+
+    Uses the per-process CoreAudio API (macOS 14+) which powers the orange
+    privacy indicator.  This lets the watcher detect mic-idle even while
+    trnscrb itself is recording.
+
+    On macOS < 14 (API unavailable), falls back to the device-level check
+    which includes trnscrb's own usage — the watcher must then rely on the
+    app-gone check to stop recording.
+    """
+    pids = _pids_using_mic_input()
+    if pids is None:
+        return is_mic_in_use()  # API unavailable — device-level fallback
+    return bool(pids)
+
+
 # ── Meeting presence checks ───────────────────────────────────────────────────
+
+def _browser_proc_pids() -> set[int]:
+    """Return PIDs of all running browser processes."""
+    pids: set[int] = set()
+    try:
+        ps = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,comm="],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in ps.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                pid_str, comm = parts
+                for frag in _BROWSER_PROC_FRAGS:
+                    if frag in comm:
+                        try:
+                            pids.add(int(pid_str))
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+    return pids
+
 
 def _meeting_app_pids() -> set[int]:
     """Return PIDs of known native meeting apps that are currently running."""
@@ -296,15 +367,17 @@ def _all_meeting_app_pids() -> set[int]:
     return pids
 
 
-def _pids_using_mic_input() -> set[int]:
+def _pids_using_mic_input() -> set[int] | None:
     """
     Return PIDs of all processes currently capturing audio input.
 
     Uses CoreAudio's kAudioHardwarePropertyProcessObjectList API (macOS 14+),
     the same mechanism that drives the orange privacy-indicator dot.
-    Returns an empty set on older macOS or on any error.
+    Excludes trnscrb's own PID and any registered child PIDs (sck-capture).
+
+    Returns None when the API is unavailable (macOS < 14) so callers can
+    fall back to device-level checks.
     """
-    pids: set[int] = set()
     try:
         ca = ctypes.CDLL(
             "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
@@ -314,8 +387,10 @@ def _pids_using_mic_input() -> set[int]:
         sz = ctypes.c_uint32(0)
         if ca.AudioObjectGetPropertyDataSize(
             _kSysObject, ctypes.byref(addr), 0, None, ctypes.byref(sz)
-        ) != 0 or sz.value == 0:
-            return pids
+        ) != 0:
+            return None  # API unavailable (macOS < 14)
+        if sz.value == 0:
+            return set()  # API works, no audio process objects
 
         n = sz.value // ctypes.sizeof(ctypes.c_uint32)
         objs = (ctypes.c_uint32 * n)()
@@ -323,9 +398,10 @@ def _pids_using_mic_input() -> set[int]:
             _kSysObject, ctypes.byref(addr), 0, None,
             ctypes.byref(sz), ctypes.byref(objs)
         ) != 0:
-            return pids
+            return None
 
-        own_pid = os.getpid()
+        exclude = {os.getpid()} | _child_pids
+        pids: set[int] = set()
         for obj_id in objs:
             # Is this process using audio input?
             addr_in = _PropAddr(_kProcessIsRunningIn, _kScopeGlobal, _kElementMain)
@@ -343,11 +419,11 @@ def _pids_using_mic_input() -> set[int]:
             if ca.AudioObjectGetPropertyData(
                 obj_id, ctypes.byref(addr_pid), 0, None,
                 ctypes.byref(sz_p), ctypes.byref(pid)
-            ) == 0 and pid.value != own_pid:
+            ) == 0 and pid.value not in exclude:
                 pids.add(pid.value)
+        return pids
     except Exception:
-        pass
-    return pids
+        return None
 
 
 def is_meeting_app_running() -> bool:
@@ -355,24 +431,45 @@ def is_meeting_app_running() -> bool:
     Accurate check: is an active meeting session in progress right now?
 
     Strategy (in order):
-    1. CoreAudio per-process mic check — if any known meeting-app PID is
-       actively capturing audio input, the meeting is still live.  Uses the
-       BROAD _NATIVE_APPS list because "app is using mic" already confirms
-       an active session (Slack Helper using mic = huddle, not just Slack open).
+    1. CoreAudio per-process mic check (macOS 14+) — if any known meeting-app
+       OR browser PID is actively capturing audio input, the meeting is live.
+       This is the most reliable signal because it directly measures whether
+       the call is still using the mic, regardless of what tabs are open.
     2. Active-session process check (CptHost for Zoom, etc.) via ps.
-    3. Browser tab URL + title check (handles Google Meet / Teams in browser).
+    3. Browser tab URL + title check — ONLY used as fallback when the
+       per-process API is unavailable (macOS < 14).  Tab URLs persist after
+       calls end, so this check has false positives on its own.
     """
-    # 1. Per-process mic check (macOS 14+) — broad app list is safe here
-    #    because we intersect with processes actually capturing audio input.
+    # 1. Per-process mic check (macOS 14+)
     mic_pids = _pids_using_mic_input()
-    if mic_pids:
-        all_meeting_pids = _all_meeting_app_pids()
-        if mic_pids & all_meeting_pids:
-            return True
-        # Fall through — browser-based meetings may not be in _NATIVE_APPS,
-        # so we still check browser tabs below.
+    if mic_pids is not None:
+        # API is available — use it as authoritative signal.
+        if mic_pids:
+            # Something is using the mic. Is it a meeting app or browser?
+            all_meeting_pids = _all_meeting_app_pids()
+            if mic_pids & all_meeting_pids:
+                return True
+            # Check browsers too (handles Meet/Teams/Zoom in browser)
+            browser_pids = _browser_proc_pids()
+            if mic_pids & browser_pids:
+                return True
+        # Per-process API says no meeting app or browser is using the mic.
+        # Still check active-session processes (e.g. CptHost stays running
+        # even if mic is momentarily silent), but skip unreliable tab check.
+        try:
+            ps = subprocess.run(
+                ["ps", "-ax", "-o", "comm="],
+                capture_output=True, text=True, timeout=3,
+            )
+            for frag in _ACTIVE_SESSION_PROCS:
+                if frag in ps.stdout:
+                    return True
+        except Exception:
+            pass
+        return False
 
-    # 2. Active-session native process check (narrow list — no helper false-positives)
+    # Per-process API unavailable (macOS < 14) — use legacy fallbacks.
+    # 2. Active-session native process check (narrow list)
     try:
         ps = subprocess.run(
             ["ps", "-ax", "-o", "comm="],
@@ -384,7 +481,7 @@ def is_meeting_app_running() -> bool:
     except Exception:
         pass
 
-    # 3. Browser tab URL check (narrow — excludes Firefox window titles)
+    # 3. Browser tab URL check (only as last resort — has false positives)
     return _browser_has_meeting_tab(narrow=True)
 
 
@@ -434,9 +531,9 @@ tell application "Google Chrome"
         repeat with t in tabs of w
             set u to URL of t
             if u contains "meet.google.com" then
-                -- Skip non-call pages: landing, home, "meeting ended"
+                -- Skip non-call pages: landing, home, ended, left
                 if u ends with "/landing" or u is "https://meet.google.com/" then return ""
-                if (title of t contains "ended") then return ""
+                if (title of t contains "ended") or (title of t contains "left") then return ""
                 return "Google Meet"
             end if
             if u contains "teams.microsoft.com" then return "Microsoft Teams"
@@ -457,7 +554,11 @@ tell application "Safari"
         try
             set u to URL of current tab of w
             if u contains "meet.google.com" then
-                if u does not end with "/landing" and u is not "https://meet.google.com/" then return "Google Meet"
+                if u does not end with "/landing" and u is not "https://meet.google.com/" then
+                    set t to name of current tab of w
+                    if t contains "ended" or t contains "left" then return ""
+                    return "Google Meet"
+                end if
             end if
             if u contains "teams.microsoft.com" then return "Microsoft Teams"
         end try

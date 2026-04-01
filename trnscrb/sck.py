@@ -57,6 +57,11 @@ class SCKCapture:
             stderr=subprocess.PIPE,
         )
 
+        # Exclude this child from mic-input PID checks so the watcher
+        # doesn't mistake it for an external process.
+        from trnscrb.watcher import register_child_pid
+        register_child_pid(self._process.pid)
+
         # Wait for READY on stderr (up to 5 seconds)
         ready = False
         for _ in range(50):
@@ -82,6 +87,9 @@ class SCKCapture:
 
     def stop(self) -> Path | None:
         """Stop capture and return path to temp PCM file."""
+        if self._process:
+            from trnscrb.watcher import unregister_child_pid
+            unregister_child_pid(self._process.pid)
         if self._process and self._process.poll() is None:
             self._process.terminate()
             self._process.wait(timeout=3)

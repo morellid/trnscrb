@@ -493,12 +493,14 @@ _BROWSER_SCRIPTS = [
     (_FIREFOX_WINDOW_SCRIPT, "org.mozilla.firefox"),
 ]
 
-# URL-based browsers only — used by is_meeting_app_running() for STOP detection.
-# Firefox is excluded: window titles don't change reliably after leaving a call,
-# which prevents auto-stop. Firefox meetings stop via mic-idle detection instead.
+# Browsers checked for STOP detection. Firefox window-title detection is less
+# reliable than Chrome/Safari URL detection, but closing the tab reliably changes
+# the title, and the "ended" filter handles in-tab call end.  Mic-idle grace
+# period (GRACE_SECS) acts as a fallback if the title lags.
 _BROWSER_SCRIPTS_NARROW = [
-    (_CHROME_TAB_SCRIPT,  "com.google.Chrome"),
-    (_SAFARI_TAB_SCRIPT,  "com.apple.Safari"),
+    (_CHROME_TAB_SCRIPT,      "com.google.Chrome"),
+    (_SAFARI_TAB_SCRIPT,      "com.apple.Safari"),
+    (_FIREFOX_WINDOW_SCRIPT,  "org.mozilla.firefox"),
 ]
 
 

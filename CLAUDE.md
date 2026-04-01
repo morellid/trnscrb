@@ -31,6 +31,17 @@ trnscrb install
 
 No test suite or linter is configured.
 
+## Deploying changes
+
+The menu bar app runs as a launchd service (`io.trnscrb.app`, plist at `~/Library/LaunchAgents/io.trnscrb.app.plist`) with `KeepAlive: true`. To deploy code changes:
+
+```bash
+uv pip install -e .              # install updated code
+launchctl stop io.trnscrb.app    # launchd auto-restarts it with KeepAlive
+```
+
+Do NOT launch `trnscrb start` manually — launchd manages the lifecycle. Logs: `/tmp/trnscrb.log`, `/tmp/trnscrb.err`.
+
 ## Architecture
 
 The pipeline is linear: **record → transcribe → diarize → merge → format → save → (optionally enrich)**.

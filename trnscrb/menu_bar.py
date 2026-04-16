@@ -20,7 +20,7 @@ import rumps
 from trnscrb import recorder as rec_module, transcriber, diarizer, storage
 from trnscrb.calendar_integration import get_current_or_upcoming_event
 from trnscrb.icon import icon_path, generate_icons
-from trnscrb.watcher import MicWatcher
+from trnscrb.watcher import MicWatcher, MIN_SAVE_SECS
 from trnscrb.settings import get as get_setting, put as put_setting
 
 _EMOJI_IDLE      = "🎙"
@@ -167,8 +167,23 @@ class TrnscrbApp(rumps.App):
         self._do_start(meeting_name=meeting_name, bundle_id=bundle_id)
 
     def _auto_stop(self):
-        if self._recorder and self._recorder.is_recording:
-            self._do_stop()
+        if not (self._recorder and self._recorder.is_recording):
+            return
+        started_at = self._started_at or datetime.now()
+        duration = (datetime.now() - started_at).total_seconds()
+        if duration < MIN_SAVE_SECS:
+            log.info(
+                "Auto-recording discarded (%.0fs < %ds min)",
+                duration, MIN_SAVE_SECS,
+            )
+            audio_path = self._recorder.stop()
+            if audio_path:
+                audio_path.unlink(missing_ok=True)
+            self._recorder = None
+            self._started_at = None
+            self._restore_idle()
+            return
+        self._do_stop()
 
     # ── background transcription ──────────────────────────────────────────────
 

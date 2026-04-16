@@ -58,28 +58,33 @@ class SCKCapture:
         )
 
         # Exclude this child from mic-input PID checks so the watcher
-        # doesn't mistake it for an external process.
-        from trnscrb.watcher import register_child_pid
+        # doesn't mistake it for an external process.  Anything that raises
+        # before we hand off to the reader thread must unregister again so
+        # dead PIDs don't linger (and later get reused by unrelated procs).
+        from trnscrb.watcher import register_child_pid, unregister_child_pid
         register_child_pid(self._process.pid)
+        try:
+            # Wait for READY on stderr (up to 5 seconds)
+            ready = False
+            for _ in range(50):
+                line = self._process.stderr.readline().decode().strip()
+                if line == "READY":
+                    ready = True
+                    break
+                if line.startswith("ERROR") or line.startswith("FATAL"):
+                    self._process.terminate()
+                    self._file.close()
+                    Path(self._file.name).unlink(missing_ok=True)
+                    raise RuntimeError(f"sck-capture failed: {line}")
 
-        # Wait for READY on stderr (up to 5 seconds)
-        ready = False
-        for _ in range(50):
-            line = self._process.stderr.readline().decode().strip()
-            if line == "READY":
-                ready = True
-                break
-            if line.startswith("ERROR") or line.startswith("FATAL"):
+            if not ready:
                 self._process.terminate()
                 self._file.close()
                 Path(self._file.name).unlink(missing_ok=True)
-                raise RuntimeError(f"sck-capture failed: {line}")
-
-        if not ready:
-            self._process.terminate()
-            self._file.close()
-            Path(self._file.name).unlink(missing_ok=True)
-            raise RuntimeError("sck-capture did not become ready in time")
+                raise RuntimeError("sck-capture did not become ready in time")
+        except BaseException:
+            unregister_child_pid(self._process.pid)
+            raise
 
         # Start reader thread
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)

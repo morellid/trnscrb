@@ -81,7 +81,9 @@ Key constants: `WARMUP_SECS=5`, `GRACE_SECS=5`, `MIN_SAVE_SECS=30`, `APP_POLL_EV
 
 ## Important details
 
-- macOS 13+ only (CoreAudio, ScreenCaptureKit, AppleScript, rumps menu bar)
+- macOS 14+ only — the watcher's stop-detection relies on the per-process
+  CoreAudio API (`kAudioHardwarePropertyProcessObjectList`), which is Sonoma+
+  (CoreAudio, ScreenCaptureKit, AppleScript, rumps menu bar)
 - Python 3.11+, Apple Silicon recommended (Metal GPU acceleration)
 - Requires Xcode CLI tools to build the `sck-capture` Swift helper (built during `trnscrb install`)
 - The Swift helper source is in `swift/sck-capture/`; binary installs to `~/.local/share/trnscrb/sck-capture`

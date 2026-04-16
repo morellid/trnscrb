@@ -231,10 +231,17 @@ def server():
 @cli.command()
 def watch():
     """Watch for mic activity and auto-record meetings (headless, no menu bar)."""
+    import logging
     import signal
-    from trnscrb.watcher import MicWatcher, WARMUP_SECS, GRACE_SECS
+    from trnscrb.watcher import MicWatcher, WARMUP_SECS, GRACE_SECS, MIN_SAVE_SECS
     from trnscrb import recorder as rec_module, transcriber, diarizer, storage
     from trnscrb.calendar_integration import get_current_or_upcoming_event
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     _recorder_ref: list = [None]
     _started_ref:  list = [None]
@@ -250,8 +257,20 @@ def watch():
         r          = _recorder_ref[0]
         started_at = _started_ref[0] or datetime.now()
         _recorder_ref[0] = None
+        _started_ref[0]  = None
         if not r:
             return
+
+        duration = (datetime.now() - started_at).total_seconds()
+        if duration < MIN_SAVE_SECS:
+            click.echo(
+                f"  ⏹  Meeting ended — discarded ({duration:.0f}s < {MIN_SAVE_SECS}s min)"
+            )
+            audio_path = r.stop()
+            if audio_path:
+                audio_path.unlink(missing_ok=True)
+            return
+
         click.echo("  ⏹  Meeting ended — transcribing…")
         audio_path = r.stop()
         if not audio_path:

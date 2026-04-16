@@ -122,7 +122,7 @@ trnscrb start
 
 ## Audio capture
 
-trnscrb uses **ScreenCaptureKit** (macOS 13+) to capture meeting app audio directly — no virtual audio driver needed. When a meeting is detected, it captures two streams:
+trnscrb uses **ScreenCaptureKit** to capture meeting app audio directly — no virtual audio driver needed. When a meeting is detected, it captures two streams:
 
 - **ScreenCaptureKit** — the meeting app's audio (remote participants), device-independent
 - **Microphone** — your voice via the default input device
@@ -130,7 +130,7 @@ trnscrb uses **ScreenCaptureKit** (macOS 13+) to capture meeting app audio direc
 Both streams are mixed into a single recording. This works seamlessly with Bluetooth earbuds, AirPods, or any audio device — you can connect or disconnect devices mid-meeting without interrupting the recording.
 
 **Requirements:**
-- macOS 13 (Ventura) or later
+- macOS 14 (Sonoma) or later
 - Screen Recording permission (granted during `trnscrb install`)
 - Xcode Command Line Tools (to build the audio capture helper on first install)
 
@@ -158,7 +158,7 @@ Running `trnscrb enrich <id>` replaces `SPEAKER_00` / `SPEAKER_01` with inferred
 
 ## Requirements
 
-- macOS 13 (Ventura) or later
+- macOS 14 (Sonoma) or later
 - Python 3.11+
 - Apple Silicon (M1/M2/M3/M4) recommended — Whisper runs on Metal
 - Xcode Command Line Tools (`xcode-select --install`)

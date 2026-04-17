@@ -23,7 +23,7 @@ from trnscrb import recorder as rec_module, transcriber, diarizer, storage
 from trnscrb.calendar_integration import get_current_or_upcoming_event
 from trnscrb.icon import icon_path, generate_icons
 from trnscrb.watcher import MicWatcher, MIN_SAVE_SECS
-from trnscrb.settings import get as get_setting, put as put_setting
+from trnscrb.settings import get as get_setting, put as put_setting, settings_file
 
 _EMOJI_IDLE      = "🎙"
 _EMOJI_RECORDING = "🔴"
@@ -43,6 +43,10 @@ def _notify(title: str, subtitle: str, message: str = "") -> None:
 
 class TrnscrbApp(rumps.App):
     def __init__(self):
+        # Materialise missing defaults into the settings file so every
+        # user-customisable key is visible when they open it from the menu.
+        settings_file()
+
         try:
             generate_icons()
         except Exception:
@@ -73,6 +77,8 @@ class TrnscrbApp(rumps.App):
             self._integrate_item,
             None,
             rumps.MenuItem("Open Notes Folder", callback=self.open_folder),
+            rumps.MenuItem("Open Settings File", callback=self.open_settings),
+            rumps.MenuItem("Reload Settings", callback=self.reload_settings),
             None,
             rumps.MenuItem("Quit", callback=self.quit_app),
         ]
@@ -155,6 +161,31 @@ class TrnscrbApp(rumps.App):
 
     def open_folder(self, _):
         subprocess.run(["open", str(storage.ensure_notes_dir())])
+
+    def open_settings(self, _):
+        subprocess.run(["open", str(settings_file())])
+
+    def reload_settings(self, _):
+        """Re-read the settings file and re-sync menu + watcher state."""
+        auto_record    = bool(get_setting("auto_record"))
+        auto_enrich    = bool(get_setting("auto_enrich"))
+        auto_integrate = bool(get_setting("auto_integrate"))
+
+        watcher_on = bool(self._watcher and self._watcher.is_watching)
+        if auto_record and not watcher_on:
+            self._start_watcher()
+        elif not auto_record and watcher_on:
+            self._watcher.stop()
+            self._watcher = None
+            if not (self._recorder and self._recorder.is_recording):
+                self._set_icon_state("idle")
+
+        self._auto_item.title      = "Auto-transcribe: On ✓"      if auto_record    else "Auto-transcribe: Off"
+        self._enrich_item.title    = "Auto-enrich: On ✓"          if auto_enrich    else "Auto-enrich: Off"
+        self._integrate_item.title = "Auto-integrate notes: On ✓" if auto_integrate else "Auto-integrate notes: Off"
+
+        log.info("Settings reloaded")
+        _notify("Trnscrb", "Settings reloaded", "")
 
     def quit_app(self, _):
         if self._watcher:
@@ -292,7 +323,11 @@ class TrnscrbApp(rumps.App):
                 _notify("Trnscrb", "Enrichment failed", str(e))
 
         if get_setting("auto_integrate"):
-            _integrate_notes(path)
+            _integrate_notes(
+                path,
+                get_setting("integrate_prompt"),
+                get_setting("integrate_allowed_tools") or "",
+            )
 
     def _restore_idle(self):
         """Return to idle/watching — recording can start immediately."""
@@ -355,21 +390,33 @@ def _find_claude_cli() -> str | None:
     return None
 
 
-def _integrate_notes(transcript_path: Path) -> None:
-    """Fire-and-forget: ask Claude Code to integrate the transcript into notes."""
+def _integrate_notes(
+    transcript_path: Path,
+    prompt_template: str,
+    allowed_tools: str,
+) -> None:
+    """Fire-and-forget: ask Claude Code to integrate the transcript into notes.
+
+    ``prompt_template`` may contain ``{transcript_path}`` which is substituted
+    with the absolute transcript path.  ``allowed_tools`` is a comma-separated
+    tool list passed to ``--allowedTools``; empty string omits the flag.
+    """
     claude = _find_claude_cli()
     if not claude:
         log.warning("Claude CLI not found in PATH or common locations, skipping note integration")
         return
+    try:
+        prompt = prompt_template.format(transcript_path=transcript_path)
+    except (KeyError, IndexError) as e:
+        log.error("Invalid integrate_prompt template (%s); skipping note integration", e)
+        return
+    cmd = [claude, "-p", prompt]
+    if allowed_tools:
+        cmd += ["--allowedTools", allowed_tools]
     log.info("Starting note integration via Claude CLI for %s", transcript_path.name)
     try:
         subprocess.Popen(
-            [
-                claude, "-p",
-                f"/organize-notes Read the meeting transcript at {transcript_path} "
-                f"and integrate the key information into the notes.",
-                "--allowedTools", "Read,Write,Edit,Glob,Grep",
-            ],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

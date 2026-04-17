@@ -24,7 +24,11 @@ _CLAUDE_CONFIG = (
 )
 
 
-def _integrate_notes(transcript_path: Path) -> None:
+def _integrate_notes(
+    transcript_path: Path,
+    prompt_template: str,
+    allowed_tools: str,
+) -> None:
     """Fire-and-forget: ask Claude Code to integrate the transcript into notes."""
     import shutil
 
@@ -32,13 +36,15 @@ def _integrate_notes(transcript_path: Path) -> None:
     if not claude:
         return
     try:
+        prompt = prompt_template.format(transcript_path=transcript_path)
+    except (KeyError, IndexError):
+        return
+    cmd = [claude, "-p", prompt]
+    if allowed_tools:
+        cmd += ["--allowedTools", allowed_tools]
+    try:
         subprocess.Popen(
-            [
-                claude, "-p",
-                f"/organize-notes Read the meeting transcript at {transcript_path} "
-                f"and integrate the key information into the notes.",
-                "--allowedTools", "Read,Write,Edit,Glob,Grep",
-            ],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -323,7 +329,11 @@ def watch():
 
         from trnscrb.settings import get as get_setting
         if get_setting("auto_integrate"):
-            _integrate_notes(path)
+            _integrate_notes(
+                path,
+                get_setting("integrate_prompt"),
+                get_setting("integrate_allowed_tools") or "",
+            )
 
     watcher = MicWatcher(on_start=on_start, on_stop=on_stop)
     watcher.start()

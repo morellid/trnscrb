@@ -32,6 +32,7 @@ class Recorder:
         self._recording = False
         self._stream: sd.InputStream | None = None
         self._sck: SCKCapture | None = None
+        self._sck_error: str | None = None
         self._lock = threading.Lock()
         self._device_error = False
         # Temp files for streaming audio to disk
@@ -60,13 +61,13 @@ class Recorder:
         )
         self._stream.start()
 
-        # Start SCK capture if we have a target app
-        if self._app_bundle_id and find_binary() and check_permission():
-            try:
-                self._sck = SCKCapture(self._app_bundle_id)
-                self._sck.start()
-            except Exception:
-                self._sck = None  # Fall back to mic only
+        # Capture meeting-app audio (remote participants) via ScreenCaptureKit.
+        # If it cannot start we keep recording the mic, but the transcript will
+        # be missing everyone else, so record *why* for the UI to surface.
+        self._sck = None
+        self._sck_error = None
+        if self._app_bundle_id:
+            self._sck_error = self._start_sck(self._app_bundle_id)
 
     def stop(self) -> Path | None:
         """Stop recording and return the path to a temporary WAV file."""
@@ -149,7 +150,49 @@ class Recorder:
             return "ScreenCaptureKit (system + mic)"
         return "mic"
 
+    @property
+    def sck_failure_reason(self) -> str | None:
+        """Why remote-participant audio is not being captured this session.
+
+        None when meeting-app audio is being captured normally, or when
+        recording in mic-only mode (no meeting app was detected).
+        """
+        return self._sck_error
+
     # ── internal ────────────────────────────────────────────────────────────
+
+    def _start_sck(self, bundle_id: str) -> str | None:
+        """Start ScreenCaptureKit capture of the meeting app's audio.
+
+        Returns None on success, or a human-readable reason capture could not
+        start (so the caller can alert the user that remote participants will
+        be missing from the transcript).
+        """
+        if find_binary() is None:
+            return (
+                "The meeting-audio helper (sck-capture) is missing, so only "
+                "your microphone is being recorded. Run 'trnscrb install' to "
+                "rebuild it."
+            )
+        if not check_permission():
+            return (
+                "Screen Recording permission is not granted, so only your "
+                "microphone is being recorded. Remote participants will be "
+                "missing from this transcript.\n\n"
+                "Grant access from the Trnscrb menu ('Grant Screen Recording "
+                "Access') or in System Settings > Privacy & Security > Screen "
+                "& System Audio Recording, then restart Trnscrb."
+            )
+        try:
+            sck = SCKCapture(bundle_id)
+            sck.start()
+        except Exception as e:
+            return (
+                f"Meeting-audio capture failed to start ({e}), so only your "
+                "microphone is being recorded."
+            )
+        self._sck = sck
+        return None
 
     def _callback(self, indata, frames, time_info, status):
         if status:

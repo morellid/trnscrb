@@ -29,16 +29,49 @@ _EMOJI_IDLE      = "🎙"
 _EMOJI_RECORDING = "🔴"
 
 
+def _osa_escape(s: str) -> str:
+    """Escape a Python string for safe embedding in an AppleScript literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _notify(title: str, subtitle: str, message: str = "") -> None:
     """Send a macOS notification via osascript (rumps uses deprecated NSUserNotification)."""
-    def _esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace('"', '\\"')
-
     if message:
-        script = f'display notification "{_esc(message)}" with title "{_esc(title)}" subtitle "{_esc(subtitle)}"'
+        script = f'display notification "{_osa_escape(message)}" with title "{_osa_escape(title)}" subtitle "{_osa_escape(subtitle)}"'
     else:
-        script = f'display notification "{_esc(subtitle)}" with title "{_esc(title)}"'
+        script = f'display notification "{_osa_escape(subtitle)}" with title "{_osa_escape(title)}"'
     subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _alert(title: str, message: str) -> None:
+    """Show a modal alert that stays on screen until the user dismisses it.
+
+    Unlike _notify (a transient banner that is easy to miss), this is for
+    malfunctions the user must act on. osascript runs in a separate thread so
+    the alert never blocks the menu bar run loop or the watcher thread, and
+    failures are logged and downgraded to a notification — the alert itself
+    must never regress to a silent failure.
+    """
+    script = (
+        f'display alert "{_osa_escape(title)}" '
+        f'message "{_osa_escape(message)}" as critical'
+    )
+
+    def _run() -> None:
+        try:
+            proc = subprocess.run(["osascript", "-e", script],
+                                  capture_output=True, text=True)
+        except Exception as e:
+            log.error("Alert failed to launch (%s); message was: %s", e, message)
+            return
+        # display alert returns 0 once the user dismisses it; non-zero means
+        # it never showed (e.g. no GUI session), so fall back to a banner.
+        if proc.returncode != 0:
+            log.error("Alert failed (osascript: %s); message was: %s",
+                      proc.stderr.strip(), message)
+            _notify(title, message)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 class TrnscrbApp(rumps.App):
@@ -79,6 +112,7 @@ class TrnscrbApp(rumps.App):
             rumps.MenuItem("Open Notes Folder", callback=self.open_folder),
             rumps.MenuItem("Open Settings File", callback=self.open_settings),
             rumps.MenuItem("Reload Settings", callback=self.reload_settings),
+            rumps.MenuItem("Grant Screen Recording Access", callback=self.grant_screen_recording),
             None,
             rumps.MenuItem("Quit", callback=self.quit_app),
         ]
@@ -187,6 +221,26 @@ class TrnscrbApp(rumps.App):
         log.info("Settings reloaded")
         _notify("Trnscrb", "Settings reloaded", "")
 
+    def grant_screen_recording(self, _):
+        """Trigger the macOS Screen Recording prompt from this (launchd) app.
+
+        The grant is attributed to the process that requests it, so it must
+        come from here - not from a terminal - for ScreenCaptureKit capture
+        to work when the app records a meeting.
+        """
+        from trnscrb.screen_capture import check_permission, request_permission
+        if check_permission():
+            _alert("Trnscrb", "Screen Recording access is already granted.")
+            return
+        request_permission()
+        _alert(
+            "Trnscrb",
+            "Requested Screen Recording access. If no system prompt appeared, "
+            "open System Settings > Privacy & Security > Screen & System Audio "
+            "Recording, enable Trnscrb, then restart Trnscrb for it to take "
+            "effect.",
+        )
+
     def quit_app(self, _):
         if self._watcher:
             self._watcher.stop()
@@ -209,6 +263,11 @@ class TrnscrbApp(rumps.App):
         source = self._recorder.audio_source_description
         label  = f" — {meeting_name}" if meeting_name else ""
         _notify("Trnscrb", f"Transcription started{label}", f"via {source}")
+
+        reason = self._recorder.sck_failure_reason
+        if reason:
+            log.warning("Degraded capture for '%s': %s", meeting_name, reason)
+            _alert("Trnscrb: meeting not transcribed properly", reason)
 
     def _do_stop(self):
         started_at     = self._started_at or datetime.now()
